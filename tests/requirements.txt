@@ -1,0 +1,26 @@
+# WP12 — deps do runner de validação (pinadas, offline/pitstop).
+pytest==8.3.3
+pytest-asyncio==0.24.0
+httpx==0.27.2
+psycopg[binary]==3.2.3        # checagem direta de DB (counts, vector(1024), efeitos colaterais)
+redis==5.0.8                  # PING db0/1/2/3 + LLEN das filas
+boto3==1.35.36               # validar objetos no MinIO (S3-compat) no upload do cofre
+PyJWT==2.9.0                 # decodificar exp/jti do JWT (Decisão 4: maxAge 8h, revogação)
+playwright==1.49.0           # e2e de UI (login+RBAC, abrir licitacao, upload)
+
+# ── F10: unit tests do BFF IN-PROCESS (tests/unit_bff, make test-unit-bff) ────
+# O tester importa bff/app via httpx.ASGITransport (sem rede): precisa das deps
+# de IMPORT do pacote (bff/requirements.txt é a fonte — manter as versões em
+# SINCRONIA ao atualizar lá). uvicorn/observabilidade ficam de fora de propósito
+# (observability.py degrada p/ no-op sem prometheus/sentry; servidor não sobe).
+fastapi==0.115.6
+pydantic-settings==2.7.1
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+pgvector==0.3.6
+anthropic==0.42.0            # import top-level em services/anthropic.py
+aiosmtplib==3.0.2            # import top-level em services/email.py
+python-multipart==0.0.20     # FastAPI exige na REGISTRAGEM de rotas com UploadFile/Form
+joserfc>=1.0                 # decode do JWE Auth.js v5 (security.py, import tardio)
+cryptography>=43             # HKDF da chave JWE (security.py, import tardio)
+bcrypt==4.2.1                # hash de senha (admin_users, import tardio)

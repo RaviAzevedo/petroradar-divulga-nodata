@@ -1,0 +1,184 @@
+# =============================================================================
+# observability/prometheus/alerts.yml — as 4 famílias de alerta do WP10,
+# adaptadas aos NOMES REAIS de métrica desta stack:
+#   1. Cron falho/atrasado ..... petro_worker_beat_* + petro_sync_* (worker/healthz.py /metrics)
+#   2. Fila travada/backlog .... redis_key_size{db="db1"} (redis-exporter check-keys)
+#                                + petro_celery_fila_backlog (worker, pós-rebuild)
+#   3. Disco/recursos .......... node_filesystem_*/node_memory_* (node-exporter)
+#                                + container_* (cadvisor) + probe_success (blackbox)
+#   4. Redis cheio ............. redis_memory_*/redis_up (redis-exporter)
+#
+# NOTA: as métricas petro_* dependem do REBUILD da imagem do worker (healthz.py
+# novo). Regra sobre série ausente simplesmente não avalia — sem falso positivo.
+# =============================================================================
+groups:
+  # ── 1. CRON FALHO / SCRAPER ATRASADO ─────────────────────────────────────────
+  - name: petro-radar-coleta
+    rules:
+      - alert: WorkerBeatParado
+        # tasks.beat_heartbeat roda 1x/min; >5 min sem heartbeat = beat parado
+        # OU worker sem consumir a fila default (mesma lógica do /healthz).
+        expr: petro_worker_beat_heartbeat_age_seconds > 300
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Beat/worker Celery parado (heartbeat velho)"
+          description: "Heartbeat do beat com {{ $value | humanizeDuration }} de idade (limite 5m). Crons NÃO estão rodando — verificar container worker."
+
+      - alert: SyncAtrasado
+        # Espelha o painel /admin/saude-scraper e o cron sync-monitor: idade do
+        # último sync_log acima do limite por tipo (MAX_HORAS_POR_TIPO).
+        expr: petro_sync_idade_segundos > on(tipo) petro_sync_limite_segundos
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "Coleta '{{ $labels.tipo }}' sem rodar (estourou o limite)"
+          description: "Último sync_log de '{{ $labels.tipo }}' há {{ $value | humanizeDuration }} — acima do limite do tipo. Cron falho ou scraper travado."
+
+      - alert: SyncComErros
+        expr: petro_sync_erros_ultima_execucao > 0
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "Última coleta de '{{ $labels.tipo }}' registrou erros"
+          description: "sync_log mais recente de '{{ $labels.tipo }}' tem erros={{ $value }}. Ver logs do worker no Grafana ({service=\"worker\"})."
+
+      - alert: WorkerMetricsIndisponivel
+        # Esperado ficar DOWN até o rebuild da imagem do worker (README).
+        expr: up{job="worker"} == 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Métricas do worker indisponíveis (worker:8080/metrics)"
+          description: "Sem scrape do worker há 15m. Se a imagem ainda não foi rebuildada com o healthz.py novo, este alerta é esperado (ver observability/README.md)."
+
+  # ── 2. FILA TRAVADA / BACKLOG ────────────────────────────────────────────────
+  - name: petro-radar-filas
+    rules:
+      - alert: FilaComBacklog
+        # redis_key_size vem do redis-exporter (check-keys em db1) — funciona
+        # HOJE, sem depender do rebuild do worker.
+        expr: redis_key_size{db="db1", key=~"default|scraping|embeddings|ia|manutencao"} > 50
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Fila Celery '{{ $labels.key }}' com backlog (>50)"
+          description: "{{ $value }} tasks pendentes na fila '{{ $labels.key }}' há 15m+."
+
+      - alert: FilaTravada
+        # Backlog que NÃO drena: mínimo da fila ficou >20 durante 30 min.
+        expr: min_over_time(redis_key_size{db="db1", key=~"default|scraping|embeddings|ia|manutencao"}[30m]) > 20
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Fila Celery '{{ $labels.key }}' travada (não drena)"
+          description: "A fila '{{ $labels.key }}' não caiu abaixo de 20 tasks nos últimos 30 min — worker morto/preso. Verificar worker:8080/healthz e logs."
+
+  # ── 3. DISCO / RECURSOS / SAÚDE DE SERVIÇO ───────────────────────────────────
+  - name: petro-radar-recursos
+    rules:
+      # Filtro por fstype real (ext4/xfs/btrfs), NÃO por mountpoint="/": na VM
+      # do Docker Desktop (dev/macOS) o disco de dados monta em /var/lib; no
+      # servidor Linux é "/". O filtro cobre os dois sem falso negativo.
+      - alert: DiscoQuaseCheio
+        expr: (node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs|btrfs"}) < 0.15
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Disco < 15% livre ({{ $labels.mountpoint }})"
+          description: "Restam {{ $value | humanizePercentage }} em {{ $labels.mountpoint }} — limpar logs/volumes (Postgres/MinIO em risco)."
+
+      - alert: DiscoCritico
+        expr: (node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs|btrfs"}) < 0.07
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Disco < 7% em {{ $labels.mountpoint }} — risco de parada (Postgres/MinIO)"
+
+      - alert: InodesQuaseEsgotados
+        expr: (node_filesystem_files_free{fstype=~"ext4|xfs|btrfs"} / node_filesystem_files{fstype=~"ext4|xfs|btrfs"}) < 0.10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Inodes < 10% em {{ $labels.mountpoint }} (muitos arquivos pequenos/logs)"
+
+      - alert: MemoriaHostBaixa
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.08
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "RAM disponível do host < 8%"
+          description: "Restam {{ $value | humanizePercentage }} de RAM — risco de OOM-kill nos containers."
+
+      - alert: ContainerOOM
+        expr: increase(container_oom_events_total{name=~"petro-radar.*"}[15m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "OOM-kill em {{ $labels.name }}"
+          description: "O container {{ $labels.name }} sofreu OOM nos últimos 15m — ajustar limites de memória."
+
+      - alert: ContainerReiniciando
+        expr: changes(container_start_time_seconds{name=~"petro-radar.*"}[15m]) > 2
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Container {{ $labels.name }} em loop de restart"
+          description: ">2 restarts em 15m — ver `docker logs {{ $labels.name }}`."
+
+      - alert: ServicoForaDoAr
+        # Healthchecks HTTP agregados (blackbox): web, bff, worker healthz, minio.
+        expr: probe_success == 0
+        for: 3m
+        labels: { severity: critical }
+        annotations:
+          summary: "Healthcheck falhando: {{ $labels.instance }}"
+          description: "O endpoint {{ $labels.instance }} não responde como esperado há 3m."
+
+      - alert: BffSemMetricas
+        expr: up{job="bff"} == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Prometheus não alcança bff:8000/metrics"
+
+      - alert: ExporterForaDoAr
+        expr: up{job=~"node|cadvisor|redis|postgres|blackbox-http"} == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Exporter '{{ $labels.job }}' fora do ar"
+          description: "Sem scrape de {{ $labels.instance }} há 10m — ponto cego na observabilidade."
+
+  # ── 4. REDIS CHEIO / DEPENDÊNCIAS ────────────────────────────────────────────
+  - name: petro-radar-redis
+    rules:
+      - alert: RedisForaDoAr
+        expr: redis_up == 0
+        for: 3m
+        labels: { severity: critical }
+        annotations:
+          summary: "Redis fora do ar (broker Celery + cache + rate-limit)"
+
+      - alert: RedisMemoriaAlta
+        # maxmemory=512mb com policy noeviction (compose principal): encher =
+        # escrita falha (broker Celery para). Alertar antes.
+        expr: (redis_memory_used_bytes / redis_memory_max_bytes) > 0.85 and redis_memory_max_bytes > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Redis > 85% da maxmemory"
+          description: "{{ $value | humanizePercentage }} da maxmemory em uso. Policy=noeviction: se encher, o broker Celery PARA de aceitar tasks."
+
+      - alert: RedisCheio
+        expr: (redis_memory_used_bytes / redis_memory_max_bytes) > 0.95 and redis_memory_max_bytes > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Redis > 95% da maxmemory — broker prestes a travar"
+
+      - alert: PostgresForaDoAr
+        expr: pg_up == 0
+        for: 3m
+        labels: { severity: critical }
+        annotations:
+          summary: "postgres-exporter não conecta no Postgres"

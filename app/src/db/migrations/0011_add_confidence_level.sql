@@ -1,0 +1,1 @@
+ALTER TABLE "petronect_lic_resultado" ADD COLUMN "confidence_level" text;

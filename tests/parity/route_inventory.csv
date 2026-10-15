@@ -1,0 +1,136 @@
+# WP12 §4.1 — inventário das rotas /api/* (blocos datados abaixo). Recontagem 2026-08-13 (0034 — reestruturação do acervo):
+# `find app/src/app/api -name route.ts | wc -l` == 121 no working tree; vira 124 quando
+# WP-05/WP-09 criarem vincular-operacao, import/jobs e import/jobs/[id]/desfazer no Next.
+# Colunas: dominio,rota,metodos,guard_minimo,papel_que_passa,papel_que_barra,side_effect
+# Convenções (lidas por test_route_inventory.py e go_no_go.py G2):
+#   - rota: caminho real iniciando em /api/... (placeholders [id]/[licitacaoId]/... resolvidos no teste).
+#   - metodos: separados por '|'; o 1º é o usado no teste de cobertura.
+#   - papel_que_passa: papel MÍNIMO autorizado (ou bearer/anon/credentials/setup-token p/ auth de máquina/público).
+#   - papel_que_barra: papel que DEVE receber 401/403 (ou '-' quando não há barreira de papel a testar aqui).
+#   - side_effect: resumo dos efeitos colaterais (db/storage/ia/embed/email/push/whatsapp/webhook/proxy/fila).
+# Total: 90 linhas de dados.
+# Linhas != nº de route.ts DE PROPÓSITO: /api/preferencias-email tem 2 linhas (GET e PATCH), e 3 route.ts seguem
+# FORA do inventário (admin/emails/preferencias, cron/extrair-anexos) — lacuna PRÉ-EXISTENTE anotada em 2026-08-13, fora do
+# escopo 0034 (corrigir exige sonda/allow-list próprias; ver plano-dev/02-APIS §17).
+# 0 rotas sem teste => GO/G2.
+dominio,rota,metodos,guard_minimo,papel_que_passa,papel_que_barra,side_effect
+CONFORMIDADE,/api/conformidade/cofre/documentos,GET|POST|DELETE,requireVisualizar(GET)/podeGerenciarDocumentosHabilitacao(POST)/podeExcluirDocumentoHabilitacao(DELETE),SGI,EXTERNO,db+storage+ia(ocr)+filtro-restrito
+CONFORMIDADE,/api/conformidade/cofre/documentos/[id],GET|PATCH|DELETE,requireVisualizar(GET)/podeGerenciarDocumentosHabilitacao(PATCH)/podeExcluirDocumentoHabilitacao(DELETE),SGI,EXTERNO,db(update+del)+storage(versao)+restrito-404
+CONFORMIDADE,/api/conformidade/cofre/documentos/[id]/download,GET,requireVisualizar,VISUALIZADOR,EXTERNO,storage(get)+stream+db(audit_download_restrito)
+CONFORMIDADE,/api/conformidade/cofre/documentos/[id]/anexos,GET|POST,requireVisualizar(GET)/podeGerenciarDocumentosHabilitacao(POST),SGI,EXTERNO,db(anexos)+storage(put)
+CONFORMIDADE,/api/conformidade/cofre/documentos/[id]/anexos/[anexoId],PATCH|DELETE,podeGerenciarDocumentosHabilitacao,SGI,EXTERNO,db(update+del)+storage(del)
+CONFORMIDADE,/api/conformidade/cofre/documentos/[id]/anexos/[anexoId]/download,GET,requireVisualizar,VISUALIZADOR,EXTERNO,storage(get)+stream
+CONFORMIDADE,/api/conformidade/cofre/documentos/[id]/familias,GET|POST|DELETE,requireVisualizar(GET)/podeGerenciarFamilias(POST|DELETE),SGI,EXTERNO,db(documento_familias NxN)
+CONFORMIDADE,/api/conformidade/cofre/documentos/[id]/projetos,GET|POST|DELETE,requireVisualizar(GET)/requireAuth(POST|DELETE),TECNICO,EXTERNO,db(documento_projetos NxN)
+CONFORMIDADE,/api/conformidade/cofre/documentos/bulk-download,POST,requireVisualizar,VISUALIZADOR,EXTERNO,storage(get-multi)+zip-em-memoria+db(audit_download_restrito)
+CONFORMIDADE,/api/conformidade/familias,GET|POST,requireVisualizar(GET)/podeGerenciarFamilias(POST),SGI,EXTERNO,db(familias_crc)
+CONFORMIDADE,/api/conformidade/familias/[id],GET|PATCH|DELETE,requireVisualizar(GET)/podeGerenciarFamilias(PATCH)/podeExcluirFamilia(DELETE),SGI,EXTERNO,db(update+del)
+CONFORMIDADE,/api/conformidade/familias/[id]/anexos,GET|POST,requireVisualizar(GET)/podeGerenciarFamilias(POST),SGI,EXTERNO,db(familia_anexos)+storage(put)
+CONFORMIDADE,/api/conformidade/familias/[id]/anexos/[anexoId],DELETE,podeGerenciarFamilias,SGI,EXTERNO,db(del)+storage(del)
+CONFORMIDADE,/api/conformidade/familias/[id]/anexos/[anexoId]/download,GET,requireVisualizar,VISUALIZADOR,EXTERNO,storage(get)+stream
+CONFORMIDADE,/api/conformidade/familias/match/[licitacaoId],GET|POST,requireVisualizar(GET)/podeGerenciarFamilias(POST),SGI,EXTERNO,db(persist match familia-edital)
+CONFORMIDADE,/api/conformidade/import/familias,POST,verificarImportToken,bearer,sem-bearer,db(bulk insert familias_crc)
+CONFORMIDADE,/api/conformidade/import/scan,POST,verificarImportToken,bearer,sem-bearer,db(insert documentos_habilitacao+import_jobs)+storage(put)
+CONFORMIDADE,/api/conformidade/import/template/familias,GET,publico,anon,-,gera-xlsx-template
+CONFORMIDADE,/api/conformidade/import/token,POST,requireConformidade,SGI,VISUALIZADOR,emite-import-token(hmac)
+# NOVAS 2026-08-12 (migration 0033 — "cofre por operação"): 3 rotas que só existem
+# no on-prem (não estão na base canônica das 103). Guards MISTOS de propósito:
+# GET /operacoes usa requireConformidade desde a 0034 (P10 — 403 COM `code`, barra
+# VISUALIZADOR); GET /operacoes/[id] segue requireVisualizar (403 COM `code`); os
+# POST usam requireAuth + podeGerenciarDocumentosHabilitacao (403 SEM `code`,
+# NextResponse.json cru). O deny-test sonda o 1º método de cada linha; a assimetria
+# com/sem `code` é provada in-process por tests/unit_bff/test_operacoes_guards.py e
+# tests/unit_bff/test_acervo_rotas.py.
+CONFORMIDADE,/api/conformidade/operacoes,GET|POST,requireConformidade(GET)/podeGerenciarDocumentosHabilitacao(POST),SGI,VISUALIZADOR,db(read operacoes; POST insert operacoes+audit_log)
+CONFORMIDADE,/api/conformidade/operacoes/[id],GET|PATCH,requireVisualizar(GET)/requireConformidade(PATCH),SGI,EXTERNO,db(read dossiê; PATCH update operacoes+audit_log)
+# NOVAS 2026-09-12 (migration 0043 — disciplina e profissional, onda 4). GET usa
+# requireConformidade (403 COM `code`); POST/PATCH/PUT/DELETE usam requireAuth +
+# podeGerenciarDocumentosHabilitacao (403 SEM `code`). Sem espelho BFF: sao web-only
+# no NGINX (5 location novas nos tres confs). As satelites de documento divergem do
+# molde projetos/route.ts no GET, que la e requireVisualizar — ver spec ONDA-4 §1j.
+CONFORMIDADE,/api/conformidade/disciplinas,GET,requireConformidade,SGI,VISUALIZADOR,db(read catalogo) [web-only no nginx]
+CONFORMIDADE,/api/conformidade/disciplinas/cobertura,GET,requireConformidade,SGI,VISUALIZADOR,db(read agregado) [web-only no nginx]
+CONFORMIDADE,/api/conformidade/operacoes/[id]/disciplinas,GET|PUT,requireConformidade(GET)/podeGerenciarDocumentosHabilitacao(PUT),SGI,VISUALIZADOR,db(read; PUT delete+insert operacao_disciplinas+audit_log) [web-only no nginx]
+CONFORMIDADE,/api/conformidade/profissionais,GET|POST,requireConformidade(GET)/podeGerenciarDocumentosHabilitacao(POST),SGI,VISUALIZADOR,db(read profissionais; POST insert profissionais+audit_log) [web-only no nginx]
+CONFORMIDADE,/api/conformidade/profissionais/[id],GET|PATCH,requireConformidade(GET)/podeGerenciarDocumentosHabilitacao(PATCH),SGI,VISUALIZADOR,db(read detalhe; PATCH update profissionais+audit_log) [web-only no nginx]
+CONFORMIDADE,/api/conformidade/cofre/documentos/[id]/profissionais,GET|POST|DELETE,requireConformidade(GET)/podeGerenciarDocumentosHabilitacao(POST|DELETE),SGI,VISUALIZADOR,db(profissional_documentos NxN+audit_log)+restrito-404 [web-only no nginx]
+CONFORMIDADE,/api/conformidade/cofre/documentos/[id]/atividades,GET|POST|DELETE,requireConformidade(GET)/podeGerenciarDocumentosHabilitacao(POST|DELETE),SGI,VISUALIZADOR,db(documento_atividades+audit_log)+restrito-404 [web-only no nginx]
+# NOVAS 2026-09-12 (migration 0044 — anotacoes e itens tagueados, onda 5). GET usa
+# requireConformidade (403 COM `code`); POST/PATCH/DELETE usam requireAuth +
+# podeGerenciarDocumentosHabilitacao (403 SEM `code`) e, nas anotacoes, autor-ou-ADMIN.
+# Sem espelho BFF: sao web-only no NGINX (2 location novas nos tres confs).
+CONFORMIDADE,/api/conformidade/anotacoes,GET|POST,requireConformidade(GET)/podeGerenciarDocumentosHabilitacao(POST),SGI,VISUALIZADOR,db(read acervo_anotacoes; POST insert+audit_log)+redigirPii+restrito-404 [web-only no nginx]
+CONFORMIDADE,/api/conformidade/anotacoes/[id],PATCH|DELETE,requireAuth+podeGerenciarDocumentosHabilitacao+autor-ou-ADMIN,SGI,VISUALIZADOR,db(update/delete acervo_anotacoes+audit_log)+redigirPii+restrito-404 [web-only no nginx]
+CONFORMIDADE,/api/conformidade/cofre/documentos/[id]/itens,GET|POST|DELETE,requireConformidade(GET)/podeGerenciarDocumentosHabilitacao(POST|DELETE),SGI,VISUALIZADOR,db(documento_itens_tag+audit_log)+restrito-404 [web-only no nginx]
+CONFORMIDADE,/api/conformidade/cofre/documentos/verificar,POST,podeGerenciarDocumentosHabilitacao,SGI,EXTERNO,db(read por sha256 - nao persiste; oculta metadado de restrito)
+# NOVAS 2026-08-13 (migration 0034 — reestruturação do acervo; plano-dev/02-APIS §17):
+# adoção em lote de órfãos (403 inline SEM `code`), listagem de jobs de ingestão
+# (requireConformidade — 403 COM `code`) e desfazer de job (requireAdmin). O allow-test
+# do desfazer resolve [id] no UUID_NAO_SEMEADO → 404 pós-guard prova a autorização.
+# Guards provados in-process por tests/unit_bff/test_acervo_rotas.py.
+CONFORMIDADE,/api/conformidade/cofre/documentos/vincular-operacao,POST,podeGerenciarDocumentosHabilitacao,SGI,EXTERNO,db(update operacao_id/papel em lote+audit_log)
+CONFORMIDADE,/api/conformidade/import/jobs,GET,requireConformidade,SGI,VISUALIZADOR,db(read import_jobs+count documentos)
+CONFORMIDADE,/api/conformidade/import/jobs/[id]/desfazer,POST,requireAdmin,ADMIN,SGI,db(delete em massa+update import_jobs+audit)+storage(del-multi)
+# MATRIZ CORRIGIDA 2026-06-11: o guard real é requireAuth + podeGerenciarEnvelope
+# (app/src/app/api/conformidade/licitacoes-elegiveis/route.ts:27 → permissions.ts:137
+# isConformidade = ADMIN/LIDER/SGI). EXTERNO/VISUALIZADOR recebem 403 — não requireAuth puro.
+CONFORMIDADE,/api/conformidade/licitacoes-elegiveis,GET,requireAuth+podeGerenciarEnvelope,SGI,VISUALIZADOR,db(read join licitacoes x familias)
+LICITACOES,/api/licitacoes,GET,requireVisualizar,VISUALIZADOR,EXTERNO,db(read paginada)
+LICITACOES,/api/licitacoes/[id],GET,requireVisualizar,VISUALIZADOR,EXTERNO,db(read join)
+# MATRIZ CORRIGIDA 2026-06-11: o 1º método (GET, o sondado) usa requireAuth
+# (app/src/app/api/licitacoes/[id]/analise/route.ts:22) — EXTERNO logado recebe 200 {data:null};
+# não há barreira de papel no GET (barra=-). DELETE usa requirePropor (route.ts:234), não requireAuth.
+LICITACOES,/api/licitacoes/[id]/briefing,GET,requireVisualizar,VISUALIZADOR,EXTERNO,db(read)+pdf(pdf-lib web-only)
+LICITACOES,/api/licitacoes/[id]/baixar-anexos,POST,requirePropor,ORCAMENTISTA,VISUALIZADOR,db+egress(fonte dos anexos)+ia(ocr)+texto_cache
+LICITACOES,/api/licitacoes/[id]/circulares,GET,requireVisualizar,VISUALIZADOR,EXTERNO,db(read circulares)
+LICITACOES,/api/licitacoes/[id]/gap-habilitacao,GET|POST,requireVisualizar(GET)/requirePropor(POST),ORCAMENTISTA,EXTERNO,db(read+persist)+ia(haiku)
+LICITACOES,/api/licitacoes/[id]/go-no-go,GET,requireVisualizar,VISUALIZADOR,EXTERNO,db(read)+heuristica
+LICITACOES,/api/licitacoes/[id]/pacote-orcamento,GET,requirePropor,ORCAMENTISTA,VISUALIZADOR,db(read)+monta-pacote(dfp/ppu)
+LICITACOES,/api/licitacoes/anexos-batch,POST,requireVisualizar,VISUALIZADOR,EXTERNO,db(read)+resolve-urls(download)
+LICITACOES,/api/licitacoes/downloads,GET,requireVisualizar,VISUALIZADOR,EXTERNO,db(read estado downloads)
+LICITACOES,/api/licitacoes/export,GET,requireVisualizar,VISUALIZADOR,EXTERNO,db(read)+gera-xlsx/csv
+LICITACOES,/api/licitacoes/export/xlsx,GET,requireVisualizar,VISUALIZADOR,EXTERNO,db(read)+gera-xlsx(exceljs) WEB-ONLY
+EMAIL,/api/preferencias-email,GET,requireAuth,QUALQUER,ANONIMO,db(read preferencias do proprio user) WEB-ONLY
+EMAIL,/api/preferencias-email,PATCH,requireAuth,QUALQUER,ANONIMO,db(upsert preferencia do proprio user) WEB-ONLY
+LICITACOES,/api/licitacoes/reclassify,POST,podeSincronizar,LIDER,VISUALIZADOR,db(licitacoes+historico+perfis_interesse)
+LICITACOES,/api/licitacoes/search,GET,requireVisualizar,VISUALIZADOR,EXTERNO,db
+CRON,/api/cron/acervo-index,GET,verifyCronAuth,bearer,sem-bearer,db(acervo_chunks)+embed(1024)+elastic
+CRON,/api/cron/cnpj-watch,GET,verifyCronAuth,bearer,sem-bearer,db(update)+email+egress(cnpj)
+CRON,/api/cron/convocacao-watch,GET,verifyCronAuth,bearer,sem-bearer,db(convocacoes)+email
+CRON,/api/cron/digest-executivo,GET,verifyCronAuth,bearer,sem-bearer,db(read)+email+push
+CRON,/api/cron/prazos,GET,verifyCronAuth,bearer,sem-bearer,db(notif+historico)+email
+CRON,/api/cron/relatorio-mensal,GET,verifyCronAuth,bearer,sem-bearer,db(read)+email+push
+CRON,/api/cron/saude-contratos,GET,verifyCronAuth,bearer,sem-bearer,db(read contratos)+email+push
+CRON,/api/cron/sync-monitor,GET|POST,verifyCronAuth,bearer,sem-bearer,db(sync_log)+email+push
+CRON,/api/cron/triagem-semantica,GET,verifyCronAuth,bearer,sem-bearer,db(licitacoes)+ia+push
+CRON,/api/cron/vencimentos,GET,verifyCronAuth,bearer,sem-bearer,db(read)+email
+ADMIN,/api/admin/audit-log,GET,requireAdmin,ADMIN,VISUALIZADOR,db(read historico_alteracoes)
+ADMIN,/api/admin/saude-scraper,GET,requireAdmin,ADMIN,VISUALIZADOR,db(read estado pipeline)
+ADMIN,/api/admin/users,GET|POST,requireAdmin,ADMIN,VISUALIZADOR,db(users+bcrypt)+email(opc)
+ADMIN,/api/admin/users/[id],PATCH|DELETE,requireAdmin,ADMIN,VISUALIZADOR,db(update)+redis(jti revoga)
+RESULTADOS,/api/resultados,GET,requireVisualizar,VISUALIZADOR,EXTERNO,db(read)
+RESULTADOS,/api/resultados/[id],GET,requireVisualizar,VISUALIZADOR,EXTERNO,db(read join)
+RESULTADOS,/api/resultados/[id]/eventos,GET|POST,requireVisualizar(GET)/podeGerenciarEnvelope(POST),LIDER,EXTERNO,db(petronect_lic_eventos)
+RESULTADOS,/api/resultados/export,GET,requireVisualizar,VISUALIZADOR,EXTERNO,db(read)+gera-xlsx/csv
+# MATRIZ CORRIGIDA 2026-06-11: o 1º método (GET, o sondado) usa requireAuth
+# (app/src/app/api/perfis/route.ts:9) — EXTERNO logado recebe 200; barreira requireGestao
+# só existe no POST (route.ts:20). barra=-.
+PERFIS,/api/perfis,GET|POST,requireAuth(GET)/requireGestao(POST),EXTERNO,-,db(perfis_interesse)
+PERFIS,/api/perfis/[id],PUT|DELETE,requireGestao,LIDER,TECNICO,db(update+del)+reclassifica(indireto)
+PERFIS,/api/perfis/preview,POST,requireVisualizar,VISUALIZADOR,EXTERNO,db(read count)
+AUTH,/api/auth/[...nextauth],GET|POST,nextauth,credentials,senha-errada,db(read users)+emite-jwt
+AUTH,/api/auth/setup,POST,publico-condicional,setup-token,segundo-uso(409),db(1o admin bcrypt)
+USERS,/api/users,GET,requireGestao,LIDER,TECNICO,db(read users sem hash)
+RELATORIOS,/api/relatorios/curriculo-rt,GET,requireConformidade,SGI,VISUALIZADOR,db(read agregado)
+ACERVO,/api/acervo/buscar,POST,requireAcervo,TECNICO,EXTERNO,embed(1024)+pgvector+ia+anti-IDOR
+ADMIN,/api/admin/entra/usuarios,GET,requireAdmin,ADMIN,VISUALIZADOR,graph(egress busca diretorio)
+ADMIN,/api/admin/users/[id]/revogar-sessoes,POST,requireAdmin,ADMIN,VISUALIZADOR,redis(corte sessoes)+db(audit)
+ADMIN,/api/admin/emails/filtros,GET|POST,requireAdmin,ADMIN,VISUALIZADOR,db(filtros_email+audit)
+ADMIN,/api/admin/emails/filtros/[id],PATCH|DELETE,requireAdmin,ADMIN,VISUALIZADOR,db(update/delete cascade+audit)
+ADMIN,/api/admin/emails/filtros/[id]/preview,GET,requireAdmin,ADMIN,VISUALIZADOR,db(read licitacoes)
+ADMIN,/api/admin/emails/assinaturas,GET|POST,requireAdmin,ADMIN,VISUALIZADOR,db(assinaturas_email+audit)
+ADMIN,/api/admin/emails/assinaturas/[id],PATCH|DELETE,requireAdmin,ADMIN,VISUALIZADOR,db(update/delete+audit)
+ADMIN,/api/admin/emails/assinaturas/[id]/enviar-teste,POST,requireAdmin,ADMIN,VISUALIZADOR,db(read)+email(digest teste)
+CRON,/api/cron/digest-licitacoes,GET,verifyCronAuth,bearer,sem-bearer,db(read+ledger)+email(digest por assinatura)
+LICITACOES,/api/licitacoes/[id]/anexos-zip,GET,requireVisualizar,VISUALIZADOR,EXTERNO,download-na-fonte+zip
+LICITACOES,/api/licitacoes/[id]/dossie,POST,requirePropor,ORCAMENTISTA,VISUALIZADOR,db+download-na-fonte+ia(claude+ocr)+ratelimit(por licitacao)+zip(jszip+pdf-lib+exceljs web-only)

@@ -1,0 +1,12 @@
+node_modules/
+.next/
+.env
+.env.local
+.env*.local
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+docs/*.pptx
+.vercel
+scripts/__pycache__/
+scripts/sync_client/__pycache__/

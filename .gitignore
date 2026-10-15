@@ -1,0 +1,41 @@
+# Segredos e dados locais — NUNCA versionar
+.env.onprem
+*.pem
+*.key
+*.crt
+nginx/certs/
+deploy/secrets/*
+!deploy/secrets/.gitignore
+!deploy/secrets/README.md
+
+# Dados GERADOS (seeds SQL, dumps, exports): a RECEITA sobe, o DADO nao.
+db/seeds/*.sql
+app/src/db/seeds/*.sql
+
+# Artefatos de build/pacote
+deploy/dist/
+images.tar*
+images.list
+embeddings_cache.tar*
+backups/
+
+# Runtime/temporarios
+tests/_artifacts/
+# Baseline do parity self-golden: capturada do PROPRIO ambiente (pode conter
+# dado real do banco) — fica local, nao versionada.
+tests/_golden/
+__pycache__/
+*.pyc
+.DS_Store
+node_modules/
+
+# Caches de ferramentas (nunca versionar — reaparecem a cada lint/typecheck/test)
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+# Artefatos de build/cobertura
+*.tsbuildinfo
+coverage/
+
+.env
+.env.local

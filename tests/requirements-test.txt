@@ -1,0 +1,14 @@
+# Dependências da SUITE DE TESTES DE PARIDADE (tests/).
+# Instalação offline-friendly: fixe versões e pré-baixe os wheels para o air-gap.
+#   pip download -r tests/requirements-test.txt -d wheelhouse/    (máquina com internet)
+#   pip install --no-index --find-links wheelhouse/ -r tests/requirements-test.txt  (no servidor)
+#
+# Rodar:  pytest tests/ -v
+#         BFF_BASE_URL=http://127.0.0.1:8000 pytest tests/ -v   (contra o container)
+
+pytest>=8.0,<9
+pytest-asyncio>=0.23,<0.25
+# <0.29 (era <0.28): o CI do unit_bff instala este arquivo JUNTO com
+# bff/requirements.txt (httpx==0.28.1) — o teto antigo criava conflito de resolver.
+httpx>=0.27,<0.29
+PyJWT>=2.8,<3

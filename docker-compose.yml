@@ -1,0 +1,430 @@
+# =============================================================================
+# Petro Radar — Docker Compose ON-PREMISE (Proponente / TI)
+# =============================================================================
+# Stack: Next.js 16 standalone (web) + FastAPI BFF (bff) + PostgreSQL/pgvector
+# (db) + MinIO (minio) + Redis (redis) + worker Playwright/Python (worker) +
+# embeddings-local (TEI/BGE-m3). Busca full-text = Postgres (ILIKE hoje;
+# tsvector+pg_trgm quando precisar) — Elasticsearch removido em 2026-07-02.
+#
+# NGINX **nao** e servico deste compose — ja existe nos servidores da Proponente.
+# Ver nginx/conf.d/petro-radar.conf para o server block de exemplo.
+#
+# Premissas:
+#   - O app Next.js vive em ./app (parte deste repo) — e o build context do
+#     servico web (Dockerfile.web).
+#   - Este repo carrega tudo: app (front) + infra + Dockerfiles + bff/worker.
+#   - Segredos via env_file (.env.onprem). NUNCA versionar o .env real.
+#
+# Subida: `make up`  |  Migrations: `make migrate`  |  Backup: `make backup`
+# =============================================================================
+
+name: petro-radar
+
+# -----------------------------------------------------------------------------
+# Bloco de defaults reutilizaveis (YAML anchors)
+# -----------------------------------------------------------------------------
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-restart: &default-restart
+  restart: unless-stopped
+
+# Hardening (WP09): impede escalonamento de privilegio (setuid/setgid) nos
+# containers de aplicacao. Aplicado em web/bff/worker via `security_opt: *sec-opt`.
+x-sec-opt: &sec-opt
+  - "no-new-privileges:true"
+
+# Deny-list de egress SaaS PROIBIDO (G10, WP12): pino DNS 0.0.0.0 via /etc/hosts
+# nos containers de aplicacao — mesmo que algum codigo legado tente chamar
+# GitHub/Upstash/Voyage/OpenAI/Resend, a conexao falha NA ORIGEM (defesa em
+# profundidade sob o firewall da TI; a sonda tests/lib/egress_probe.sh trata
+# falha de DNS como bloqueio valido). Egress EXIGIDO (api.anthropic.com,
+# Portal da Transparencia, Microsoft Graph) NAO entra nesta lista.
+x-egress-deny: &egress-deny
+  - "api.github.com:0.0.0.0"
+  - "upstash.io:0.0.0.0"
+  - "api.voyageai.com:0.0.0.0"
+  - "api.openai.com:0.0.0.0"
+  - "api.resend.com:0.0.0.0"
+
+services:
+  # ===========================================================================
+  # web — Next.js 16 standalone (UI/RSC/paginas + rotas /api/* ainda nao
+  # migradas para o BFF). Build a partir de ./app.
+  # ===========================================================================
+  web:
+    build:
+      # Branch feat/onprem-prereqs (worktree) — tem os pre-requisitos aplicados
+      # (driver pg, output:standalone, R2_ENDPOINT, embeddings local, SMTP).
+      context: ./app
+      dockerfile: ../Dockerfile.web
+      args:
+        # NEXT_PUBLIC_* sao embutidas em BUILD-TIME — precisam vir como build args.
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-https://radar.example.local}
+        NEXT_PUBLIC_FEATURE_RESULTADOS: ${NEXT_PUBLIC_FEATURE_RESULTADOS:-true}
+        NEXT_PUBLIC_PROPONENTE_CNPJ: ${NEXT_PUBLIC_PROPONENTE_CNPJ:-11222333000181}
+        NEXT_PUBLIC_PETRONECT_URL: ${NEXT_PUBLIC_PETRONECT_URL:-https://www.petronect.com.br}
+    image: petro-radar/web:${IMAGE_TAG:-onprem}
+    security_opt: *sec-opt
+    extra_hosts: *egress-deny
+    env_file: [.env.onprem]
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      NEXT_TELEMETRY_DISABLED: "1"
+    networks: [frontend, backend]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    # Porta exposta SO no loopback do host — o NGINX dos servidores faz proxy.
+    # Se o NGINX rodar em outro host, troque por uma rede 'external' compartilhada.
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      # /api/auth/csrf e publico (handler do NextAuth, fora do gate de sessao)
+      # e responde 200 sem tocar o banco — canario de "o server.js esta de pe".
+      # (Ate 2026-09 era /api/push/vapid-public-key, que saiu com o Web Push.)
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/auth/csrf').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    logging: *default-logging
+    <<: *default-restart
+
+  # ===========================================================================
+  # bff — FastAPI (camada estranguladora). Valida o JWT do NextAuth, centraliza
+  # RBAC, fala com db/minio/redis/es. Comeca como esqueleto e cresce por ondas.
+  # ===========================================================================
+  bff:
+    build:
+      context: ./bff
+      dockerfile: Dockerfile
+    image: petro-radar/bff:${IMAGE_TAG:-onprem}
+    security_opt: *sec-opt
+    extra_hosts: *egress-deny
+    env_file: [.env.onprem]
+    environment:
+      # AUTH_SECRET compartilhado com o web para validar o mesmo token (via env_file).
+      UVICORN_WORKERS: ${BFF_WORKERS:-2}
+      # O BFF (app/core/config.py) le S3_*; o web le R2_*. Mapeia R2_* -> S3_*
+      # para o MinIO (senao o storage via BFF quebra silencioso).
+      S3_ENDPOINT: ${R2_ENDPOINT:-http://minio:9000}
+      S3_ACCESS_KEY: ${R2_ACCESS_KEY_ID:-}
+      S3_SECRET_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      S3_BUCKET: ${R2_BUCKET:-petro-radar}
+      # Contrato de IA compartilhado (fonte canonica shared/ai-contract.json). SEM
+      # isto, ai_contract.load() lanca e include_migrated derruba TODAS as rotas
+      # /api migradas -> BFF sobe 'healthy' servindo 404 (auditoria 2026-07).
+      AI_CONTRACT_PATH: /shared/ai-contract.json
+    networks: [frontend, backend]
+    volumes:
+      # shared/ vive na RAIZ do repo, fora do build context ./bff — nao pode ser
+      # copiado no Dockerfile; montado read-only para o BFF achar o ai-contract.
+      - ./shared:/shared:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      # RAG: o BFF sobe sem esperar o modelo (router faz GATE 503 se indisponivel).
+      embeddings-local:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/bff/health',timeout=3).status==200 else 1)"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+    <<: *default-restart
+
+  # ===========================================================================
+  # db — PostgreSQL 16 + pgvector (imagem oficial). Banco unico das 52 tabelas.
+  # ===========================================================================
+  db:
+    image: pgvector/pgvector:pg16
+    # D2/D7: flags do postmaster. pg_stat_statements SEMPRE carregada (custo
+    # ~desprezível; é a fonte de diagnóstico de queries lentas). Tuning de
+    # memória parametrizado por env: defaults LEVES p/ dev (Mac compartilhado);
+    # valores de PRODUÇÃO (host 8-16GB) documentados no .env.onprem.example
+    # (bloco "TUNING POSTGRES"). Mudança exige recreate: docker compose up -d db.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=top
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-512MB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-1536MB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-128MB}
+      - -c
+      - work_mem=${PG_WORK_MEM:-16MB}
+      - -c
+      - random_page_cost=${PG_RANDOM_PAGE_COST:-1.1}
+    env_file: [.env.onprem]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-petro_radar}
+      POSTGRES_USER: ${POSTGRES_USER:-petro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env.onprem}
+      # Tuning leve; ajuste conforme RAM do servidor.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    networks: [backend]
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # Init roda APENAS em volume vazio (primeiro boot). Cria extensao vector.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    # NAO expor a porta para fora — rede 'backend' interna. Descomente so p/ debug local.
+    # ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-petro} -d ${POSTGRES_DB:-petro_radar}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    shm_size: 256mb
+    logging: *default-logging
+    <<: *default-restart
+
+  # ===========================================================================
+  # redis — rate-limit + cache + broker/result-backend de filas (Celery).
+  # AOF ligado para durabilidade do broker entre restarts.
+  # ===========================================================================
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory ${REDIS_MAXMEMORY:-512mb}
+      --maxmemory-policy noeviction
+      --requirepass ${REDIS_PASSWORD:?defina REDIS_PASSWORD no .env.onprem}
+    networks: [backend]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    logging: *default-logging
+    <<: *default-restart
+
+  # ===========================================================================
+  # minio — storage S3-compativel (substitui Cloudflare R2). Bucket privado.
+  # ===========================================================================
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    env_file: [.env.onprem]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?defina MINIO_ROOT_USER no .env.onprem}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?defina MINIO_ROOT_PASSWORD no .env.onprem}
+    # frontend e OBRIGATORIA para o 'ports' abaixo funcionar: a rede 'backend'
+    # e internal:true e o Docker IGNORA silenciosamente port-publishing de
+    # containers que so estao em redes internas (console 9001 nunca abria).
+    # A API 9000 continua NAO publicada (acesso so pela rede backend).
+    networks: [backend, frontend]
+    volumes:
+      - minio_data:/data
+    # Console (9001) so no loopback para administracao; API (9000) interna.
+    ports:
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    logging: *default-logging
+    <<: *default-restart
+
+  # ===========================================================================
+  # createbuckets — job efemero: cria bucket privado + service account.
+  # Roda uma vez, sai 0. Reexecutavel (idempotente).
+  # ===========================================================================
+  createbuckets:
+    image: minio/mc:latest
+    env_file: [.env.onprem]
+    networks: [backend]
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./scripts/bootstrap.sh:/bootstrap.sh:ro
+    entrypoint: ["/bin/sh", "/bootstrap.sh", "minio"]
+    restart: "no"
+    logging: *default-logging
+
+  # ===========================================================================
+  # (Elasticsearch REMOVIDO em 2026-07-02 — decisao registrada: era um destino
+  # so-de-escrita; a busca do app/BFF usa ILIKE no Postgres. Quando a busca
+  # precisar evoluir: tsvector + unaccent + pg_trgm no proprio Postgres.)
+  # ===========================================================================
+
+  # ===========================================================================
+  # worker — Python+Playwright: Celery worker + beat (crons do app + jobs do
+  # Portal da Transparencia + filas embeddings/ia/manutencao). Self-contained em ./worker.
+  # ===========================================================================
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    image: petro-radar/worker:${IMAGE_TAG:-onprem}
+    security_opt: *sec-opt          # no-new-privileges (container de maior superficie)
+    extra_hosts: *egress-deny
+    env_file: [.env.onprem]
+    environment:
+      # Beat dispara as rotas /api/cron/* internas via service name (estrangulador).
+      APP_BASE_URL: ${APP_BASE_URL:-http://web:3000}
+      BFF_BASE_URL: ${BFF_BASE_URL:-http://bff:8000}
+      # Redis db1 = broker/back-end do Celery (db0 = cache/rate-limit do app).
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      TZ: ${TZ:-America/Sao_Paulo}
+    networks: [frontend, backend]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+      embeddings-local:
+        condition: service_started
+    volumes:
+      # /state: schedule persistente do Celery beat (start.sh --schedule=/state/...).
+      - worker_state:/state
+      # Motor unico de classificacao (shared/classificacao) — mesmo padrao do
+      # ai-contract do BFF: shared/ vive na raiz do repo, fora do build context.
+      - ./shared:/shared:ro
+    healthcheck:
+      # /healthz minimo exposto pelo worker (scheduler vivo + Postgres OK).
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+    <<: *default-restart
+
+  # ===========================================================================
+  # embeddings-local — HuggingFace TEI servindo BGE-m3 (1024) para o RAG do
+  # acervo 100% ON-PREM (DECISAO TI 19/06). Ligado por padrao; EMBEDDING_PROVIDER=local.
+  # A 1a subida baixa o modelo (~2.2GB) do HuggingFace -> precisa de EGRESS uma
+  # unica vez (rede 'frontend'); depois fica em cache no volume embeddings_cache.
+  # Para AIR-GAP estrito: pre-carregue o volume offline (deploy/preload-embeddings.sh)
+  # e remova a rede 'frontend' desta secao.
+  # ===========================================================================
+  embeddings-local:
+    # cpu-1.8 (era cpu-1.5): o hf-hub antigo da 1.5 nao acompanha os redirects
+    # relativos atuais do huggingface.co ("relative URL without a base") e o
+    # download do modelo morria em loop; a 1.8 tambem traz curl/bash, entao o
+    # healthcheck abaixo funciona (na 1.5 nao havia curl e o check falhava sempre).
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    # A imagem TEI cpu so tem manifest amd64. No servidor x86 = nativo.
+    # Em dev Apple Silicon (arm64) roda emulado (lento) — exige Rosetta/QEMU no Docker.
+    platform: ${EMBEDDINGS_PLATFORM:-linux/amd64}
+    command: ["--model-id", "${EMBEDDING_MODEL:-BAAI/bge-m3}", "--port", "80"]
+    environment:
+      HUGGINGFACE_HUB_CACHE: /data
+    # frontend = egress p/ baixar o modelo na 1a vez; backend = servir bff/worker.
+    networks: [frontend, backend]
+    volumes:
+      - embeddings_cache:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:80/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s   # 1a subida baixa o modelo (~2.2GB)
+    logging: *default-logging
+    <<: *default-restart
+
+  # ===========================================================================
+  # tester — runner de validacao de paridade WP12 (perfil "tests"; NAO sobe no
+  # `make up`). Executa smoke/e2e/rotas/paridade/egress/go-no-go DENTRO das
+  # redes do compose, falando com web/bff/db/redis/minio/es pelos service names.
+  # Efemero por desenho: invocado via `make test-*` (compose run --rm); por isso
+  # NAO tem restart nem healthcheck. O codigo de teste e montado de ./tests
+  # (itera sem rebuild) e os artefatos persistem no host em tests/_artifacts/.
+  # ===========================================================================
+  tester:
+    profiles: ["tests"]
+    build:
+      context: ./tests
+      dockerfile: Dockerfile.tester
+    image: petro-radar/tester:${IMAGE_TAG:-onprem}
+    security_opt: *sec-opt
+    env_file: [.env.onprem]
+    environment:
+      # URL do PROD-REF (clone da producao para a comparacao §5).
+      # Vazio = compare_prod_onprem.py cai nos goldens versionados (skipped=true).
+      PROD_REF_BASE_URL: ${PROD_REF_BASE_URL:-}
+      ONPREM_BASE_URL: http://web:3000
+      BFF_BASE_URL: http://bff:8000
+      # go_no_go.py/egress_guard.py leem/escrevem os artefatos canonicos aqui.
+      GNG_ARTIFACTS: /tests/_artifacts
+      # ai-contract p/ unit_bff/test_ai_contract e e2e que importam app.core.
+      AI_CONTRACT_PATH: /shared/ai-contract.json
+    # frontend+backend: precisa enxergar web/bff (frontend) E db/redis/es/minio
+    # (backend) para as checagens diretas de efeito colateral (psycopg/redis/boto3).
+    networks: [frontend, backend]
+    depends_on:
+      # web/bff/worker tem healthcheck no compose -> gate por service_healthy
+      # (garante stack realmente de pe antes de qualquer suite rodar).
+      web:
+        condition: service_healthy
+      bff:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    volumes:
+      # Monta ./tests inteiro (codigo + fixtures + _artifacts) sobre o COPY da
+      # imagem — edicao de teste no host vale na hora, sem rebuild do tester.
+      - ./tests:/tests
+      # ai-contract p/ unit_bff/test_ai_contract e e2e que importam o BFF.
+      - ./shared:/shared:ro
+    logging: *default-logging
+    restart: "no"
+
+# -----------------------------------------------------------------------------
+# Redes
+#   frontend : alcancavel pelo NGINX (web/bff). Tem egress (saida externa).
+#   backend  : interna, SEM rota default p/ internet — protege db/redis/es/minio.
+# -----------------------------------------------------------------------------
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+
+# -----------------------------------------------------------------------------
+# Volumes nomeados (persistencia). Para LGPD: cifrar o filesystem subjacente
+# (LUKS/dm-crypt) nos pontos de montagem de pg_data e minio_data.
+# -----------------------------------------------------------------------------
+volumes:
+  pg_data:
+  redis_data:
+  minio_data:
+  worker_state:
+  embeddings_cache:

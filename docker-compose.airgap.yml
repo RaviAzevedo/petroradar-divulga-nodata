@@ -1,0 +1,30 @@
+# =============================================================================
+# docker-compose.airgap.yml — OVERRIDE para AIR-GAP estrito (servidor SEM internet)
+# =============================================================================
+# Uso no servidor:
+#   docker compose -f docker-compose.yml -f docker-compose.airgap.yml up -d
+#
+# PRE-REQUISITO: o volume 'embeddings_cache' JA contem o modelo BGE-m3 (rode
+# deploy/preload-embeddings.sh numa maquina com internet e restaure o volume no
+# servidor via deploy/load-and-run.sh). Aqui removemos o egress do embeddings-local
+# e ligamos o modo offline do HuggingFace para garantir ZERO acesso externo.
+#
+# Egress que, se usados, ainda exigem excecao de firewall (NAO cobertos por este
+# override pois sao opcionais/externos por design): api.anthropic.com (IA),
+# sistematransparencia.petrobras.com.br (jobs da Transparencia),
+# login.microsoftonline.com + graph.microsoft.com (e-mail via Graph) e
+# brasilapi.com.br (cnpj-watch).
+# =============================================================================
+
+services:
+  embeddings-local:
+    # NOTA: o Compose MESCLA (une) listas de 'networks' entre arquivos -> nao da
+    # para "remover" a rede 'frontend' por override. A garantia real de ZERO
+    # egress vem das flags offline abaixo: com HF_HUB_OFFLINE=1, o TEI usa apenas
+    # o modelo ja em cache (/data) e NAO faz nenhuma chamada externa, mesmo que a
+    # rede 'frontend' continue anexada. Para detachar fisicamente a rede, edite
+    # docker-compose.yml e troque o embeddings-local.networks para [backend].
+    environment:
+      HUGGINGFACE_HUB_CACHE: /data
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"

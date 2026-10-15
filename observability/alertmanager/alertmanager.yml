@@ -1,0 +1,46 @@
+# =============================================================================
+# observability/alertmanager/alertmanager.yml
+#
+# SEM E-MAIL — decisão do dono (2026-07-13): "não quero nenhum e-mail que não
+# seja da Microsoft com o tenant da Proponente".
+#
+# Este arquivo tinha uma rota SMTP (smtp_smarthost + dois receivers
+# email_configs → ALERT_EMAIL_TO). Isso era um SEGUNDO caminho de e-mail, fora
+# do app e fora do Microsoft Graph: o Alertmanager falava direto com o relay
+# interno. Na prática ele estava mudo APENAS porque a máquina de dev não resolve
+# smtp.example.local — os defaults do docker-compose.observability.yml
+# (SMTP_HOST:-smtp.example.local, ALERT_EMAIL_TO:-ti@example.com) fariam
+# ele ENVIAR de verdade assim que subisse no servidor. Cortado na raiz.
+#
+# CONSEQUÊNCIA, explícita: os alertas de infra (WorkerBeatParado, SyncAtrasado,
+# DiscoCritico, MemoriaHostBaixa…) continuam sendo AVALIADOS pelo Prometheus e
+# ficam visíveis na UI do Alertmanager (:9093) e no Grafana (:3001) — mas NÃO
+# notificam ninguém por e-mail. O receiver 'null' abaixo é o que torna isso
+# explícito em vez de acidental.
+#
+# Para voltar a receber alerta de infra por e-mail RESPEITANDO a regra, o
+# caminho é um webhook_configs apontando para uma rota do app, que aí sim envia
+# pelo Microsoft Graph via lib/email/send.ts (transporte único + guarda de
+# tenant). Não foi construído: exige rota nova + tipo novo no catálogo
+# (lib/email/tipos.ts) + migration estendendo o CHECK de preferencias_email.
+# =============================================================================
+route:
+  receiver: null-receiver
+  group_by: ["alertname", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  # Receiver sem notificação: o Alertmanager exige um receiver na rota, mas
+  # nenhum canal de saída é configurado. Alertas ficam só na UI.
+  - name: null-receiver
+
+inhibit_rules:
+  # Disco crítico silencia o warning de disco; fila travada silencia o backlog.
+  - source_matchers: ['alertname="DiscoCritico"']
+    target_matchers: ['alertname="DiscoQuaseCheio"']
+    equal: ["severity"]
+  - source_matchers: ['alertname="FilaTravada"']
+    target_matchers: ['alertname="FilaComBacklog"']
+    equal: ["key"]

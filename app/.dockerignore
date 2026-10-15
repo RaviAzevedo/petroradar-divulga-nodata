@@ -1,0 +1,11 @@
+node_modules
+.next
+.git
+npm-debug.log
+.env*.local
+# Fora do contexto de build (nao entram na imagem; docs/ tinha ~12MB de SDD/PDF)
+docs
+scripts
+tests
+*.md
+tsconfig.tsbuildinfo

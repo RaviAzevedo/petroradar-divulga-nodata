@@ -1,0 +1,35 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "src/app/**/{page,layout,loading,error,not-found,template,global-error,default}.{ts,tsx}",
+    "src/app/**/route.ts",
+    "src/app/**/opengraph-image.{ts,tsx}",
+    "src/app/**/icon.{ts,tsx}",
+    "src/middleware.ts",
+    "src/proxy.ts",
+    "src/db/migrate.ts",
+    "next.config.ts",
+    "drizzle.config.ts",
+    "vitest.config.ts",
+    "src/__tests__/**/*.test.{ts,tsx}",
+    "src/__tests__/setup.ts"
+  ],
+  "project": [
+    "src/**/*.{ts,tsx}"
+  ],
+  "ignore": [
+    "src/types/next-auth.d.ts"
+  ],
+  "ignoreDependencies": [
+    "@sentry/nextjs",
+    "tailwindcss"
+  ],
+  "next": {
+    "entry": [
+      "src/app/**/{page,layout,loading,error,not-found,template,global-error,default}.{ts,tsx}",
+      "src/app/**/route.ts",
+      "src/middleware.ts",
+      "next.config.ts"
+    ]
+  }
+}

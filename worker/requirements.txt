@@ -1,0 +1,19 @@
+# Worker on-prem (Celery + Redis + Playwright). A imagem base
+# mcr.microsoft.com/playwright/python:v1.49.0-jammy ja traz Python 3 + Playwright
+# + Chromium; aqui as deps de orquestracao/dados/coleta.
+celery[redis]>=5.4,<6
+redis>=5.0
+httpx>=0.27
+psycopg[binary]>=3.2            # retencao_expurgo (psycopg3)
+
+# Jobs de coleta (Portal da Transparencia) — psycopg2 + Playwright:
+psycopg2-binary==2.9.9
+requests==2.32.3
+# PIN OBRIGATORIO: a imagem base playwright/python:v1.49.0-jammy traz os
+# BROWSERS (chromium-1148 em /ms-playwright) mas NAO traz o pacote pip
+# 'playwright' (o venv de build e removido). Sem o pin, o playwright-stealth
+# puxava playwright 1.61 -> browsers desalinhados -> era preciso um SEGUNDO
+# `playwright install chromium` no build (+~1GB na imagem). Com o pin, o pip
+# instala 1.49.0 que casa com o chromium-1148 ja presente. (2026-07-02)
+playwright==1.49.0
+playwright-stealth==2.0.3

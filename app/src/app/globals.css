@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-orange: #F59C00;
+  --color-brand-black: #1D1D1B;
+  --color-brand-gray: #4A4A4A;
+  --color-brand-light: #F7F8FA;
+}
+
+/* ── Scrollbar styling ──────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+/* ── Base ────────────────────────────────────────────────────────────────────── */
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+/* ── Touch improvements ─────────────────────────────────────────────────────── */
+
+.overflow-y-auto,
+.overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Minimum tap target on mobile */
+@media (max-width: 768px) {
+  button,
+  a,
+  [role="button"] {
+    min-height: 40px;
+  }
+}
+
+/* ── Focus styles ────────────────────────────────────────────────────────────── */
+
+:focus-visible {
+  outline: 2px solid #F59C00;
+  outline-offset: 2px;
+}
+
+/* ── Utilities ───────────────────────────────────────────────────────────────── */
+
+img {
+  display: block;
+  max-width: 100%;
+}

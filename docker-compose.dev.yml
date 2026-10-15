@@ -1,0 +1,50 @@
+# =============================================================================
+# docker-compose.dev.yml — OVERRIDE de DESENVOLVIMENTO
+# Sobe um NGINX local (http, :8080) para testar o ESTRANGULADOR (front através do
+# proxy: rotas migradas -> BFF, resto -> Next). Em produção, o NGINX já existe nos
+# servidores (não faz parte do compose).
+# Uso: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d nginx
+# =============================================================================
+services:
+  # DEV/Apple Silicon: o backend ORT (onnxruntime) do TEI morre silenciosamente
+  # sob qemu E sob Rosetta (exit 0 em loop no warmup); o candle (Rust puro,
+  # ativado por --dtype float16) e ESTAVEL sob Rosetta, mas o warmup emulado e
+  # lento — por isso --auto-truncate + --max-batch-tokens 1024 (so afeta inputs
+  # >1024 tokens; chunks do acervo tem ~300) e start_period folgado.
+  # O servidor x86 roda nativo com ORT/fp32 e os defaults do compose principal.
+  embeddings-local:
+    # max-batch-tokens 1024 (era 8192): o warmup do candle aloca proporcional ao
+    # max-batch — com a VM do Docker em 8GB (ajuste 2026-07-02), 8192 estourava
+    # a memoria em loop de OOM (RestartCount>80). 1024 + auto-truncate cabe no
+    # warmup e nao afeta os lotes reais (chunks ~300 tokens; app fatia em <=32).
+    command: ["--model-id", "${EMBEDDING_MODEL:-BAAI/bge-m3}", "--port", "80",
+              "--max-batch-tokens", "1024", "--auto-truncate",
+              "--max-concurrent-requests", "8", "--dtype", "float16"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:80/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 1200s   # warmup do candle emulado e MUITO mais lento
+
+  nginx:
+    image: nginx:alpine
+    depends_on:
+      web:
+        condition: service_healthy
+      bff:
+        condition: service_healthy
+    networks: [frontend]
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./nginx/conf.d/petro-radar-dev.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/strangler/routes.conf:/etc/nginx/strangler/routes.conf:ro
+      - ./nginx/snippets/security-headers.conf:/etc/nginx/snippets/security-headers.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

@@ -1,0 +1,25 @@
+# =============================================================================
+# docker-compose.lite.yml — overlay para hosts com POUCA RAM (servidor pequeno)
+# =============================================================================
+# Num host com ~8 GB de RAM, o embeddings-local (TEI/BGE-m3) pede
+# ~4 GB só para si. Este overlay mantém o serviço DEFINIDO — as dependências
+# `condition: service_started` de bff/worker continuam válidas — mas com ZERO
+# réplicas, então nenhum container é criado.
+#
+# Consequência funcional: a busca semântica / RAG do acervo responde 503 (gate no
+# BFF, mensagem honesta). Todo o resto do produto funciona.
+#
+# Por que não `make up-lite`: aquele alvo SOBE o TEI e depois o PARA — um pico de
+# 4 GB a cada subida, justamente o que não cabe aqui.
+#
+# Uso (fixado no .env.onprem do servidor, para valer em toda invocação):
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.lite.yml
+#
+# Para religar o RAG quando a RAM subir para 16 GB: tire este overlay do
+# COMPOSE_FILE e rode `docker compose up -d embeddings-local` (na 1a subida ele
+# baixa o BGE-m3, ~2,2 GB, e faz warmup).
+# =============================================================================
+services:
+  embeddings-local:
+    deploy:
+      replicas: 0

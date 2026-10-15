@@ -1,0 +1,13 @@
+# Contexto de build = ./worker: não arrastar lixo p/ a imagem.
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.git/
+.venv/
+venv/
+.DS_Store
+*.md

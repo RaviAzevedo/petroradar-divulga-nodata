@@ -1,0 +1,359 @@
+# =============================================================================
+# Petro Radar — docker-compose.observability.yml (WP10, OVERLAY OPT-IN)
+# =============================================================================
+# Stack de observabilidade on-prem: Prometheus + Alertmanager + Grafana +
+# Loki/Promtail + exporters (node/cadvisor/redis/postgres/blackbox) e, sob o
+# profile "errors", GlitchTip (error tracking Sentry-compatível) com Postgres
+# e Redis PRÓPRIOS (isolamento do banco principal).
+#
+# É um OVERLAY do compose principal (mesmo project name => mesmas redes
+# frontend/backend, serviços resolvidos por nome). NÃO redefine nenhum serviço
+# existente — apenas ADICIONA. Subida:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#   # (em DEV, onde o nginx vem do override: incluir também -f docker-compose.dev.yml)
+#   # GlitchTip (opcional):  ... --profile errors up -d
+#
+# Portas no host: SÓ Grafana (127.0.0.1:3001), Prometheus (127.0.0.1:9090,
+# debug) e Loki (127.0.0.1:3100, API LogQL p/ debug) — tudo loopback. GlitchTip
+# (profile errors) publica 127.0.0.1:8010 para a UI.
+# OBS: a rede `backend` é internal:true (o Docker ignora port-publishing de
+# quem está só nela) => serviços com porta publicada entram TAMBÉM na frontend.
+#
+# RAM (Mac dev 16GB): limites modestos por serviço (mem_limit) — total da stack
+# base < ~2GB de teto, uso real ~0,6-0,8GB. GlitchTip fica FORA por default.
+#
+# Versões pinadas em 2026-07-02 (as do WP10 tinham >1 ano; ver README).
+# Elasticsearch foi REMOVIDO da stack principal => sem scrape/alerta de ES.
+# Envs novas (GRAFANA_ADMIN_PASSWORD, ALERT_EMAIL_TO, GLITCHTIP_*): ver
+# observability/README.md — o orquestrador consolida no .env.onprem.example.
+# =============================================================================
+
+x-logging: &obs-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ===========================================================================
+  # prometheus — scrape de métricas + regras de alerta (30d/4GB de retenção).
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:v3.5.4 # LTS (WP10 pedia v2.54.1, >1 ano defasada)
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+      - "--storage.tsdb.retention.size=4GB"
+      - "--web.enable-lifecycle" # reload via POST /-/reload (make obs-reload)
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - obs_prometheus:/prometheus
+    # frontend só para publicar a porta de debug (backend é internal:true).
+    networks: [backend, frontend]
+    ports:
+      - "127.0.0.1:9090:9090"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *obs-logging
+    restart: unless-stopped
+
+  # ===========================================================================
+  # alertmanager — roteia alertas -> SMTP interno (mesmo relay do app, WP08).
+  # O binário NÃO expande env no config: o entrypoint renderiza o template
+  # observability/alertmanager/alertmanager.yml (placeholders ${SMTP_...})
+  # com sed (esc() protege \ & | nos valores) e então sobe o alertmanager.
+  # ===========================================================================
+  alertmanager:
+    image: prom/alertmanager:v0.33.0 # WP10 pedia v0.27.0 (>1 ano defasada)
+    # 2026-07-13: o entrypoint com sed dos ${SMTP_*} FOI REMOVIDO junto com a
+    # rota SMTP do alertmanager.yml — decisão do dono: nenhum e-mail fora do
+    # Microsoft Graph/tenant Proponente. Os defaults daqui eram a parte perigosa:
+    # ${SMTP_HOST:-smtp.example.local} e ${ALERT_EMAIL_TO:-ti@example.com}
+    # também disparam com a env VAZIA, então no servidor (onde o relay resolve)
+    # o Alertmanager passaria a enviar e-mail por SMTP sozinho. Sem template,
+    # sem env de e-mail, sem sed: o config estático já é o final.
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - obs_alertmanager:/alertmanager
+    # Só backend: sem receiver de e-mail, o Alertmanager não precisa mais de
+    # egress (o frontend existia exclusivamente para alcançar o relay SMTP).
+    networks: [backend]
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9093/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging: *obs-logging
+    restart: unless-stopped
+
+  # ===========================================================================
+  # grafana — UI única (dashboards Prometheus + Loki provisionados).
+  # ===========================================================================
+  grafana:
+    image: grafana/grafana:12.4.5 # WP10 pedia 11.2.0 (>1 ano defasada)
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3001}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false" # offline: sem telemetria
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - obs_grafana:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+    networks: [backend, frontend]
+    ports:
+      - "127.0.0.1:3001:3000" # única UI exposta (loopback; NGINX pode proxiar depois)
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *obs-logging
+    restart: unless-stopped
+
+  # ===========================================================================
+  # loki — armazenamento/consulta de logs (retenção 30d via compactor).
+  # ===========================================================================
+  loki:
+    image: grafana/loki:3.5.12 # linha 3.5 em manutenção (WP10 pedia 3.1.1)
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ./observability/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - obs_loki:/loki
+    networks: [backend, frontend]
+    ports:
+      - "127.0.0.1:3100:3100" # API LogQL p/ debug/validação (loopback)
+    mem_limit: 512m
+    logging: *obs-logging
+    restart: unless-stopped
+
+  # ===========================================================================
+  # promtail — coleta logs dos containers do projeto via Docker SD (socket).
+  # ===========================================================================
+  promtail:
+    image: grafana/promtail:3.5.12
+    command: ["-config.file=/etc/promtail/promtail-config.yml"]
+    volumes:
+      - ./observability/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro # SD + stream de logs via API
+      - obs_promtail:/positions
+    depends_on:
+      - loki
+    networks: [backend]
+    mem_limit: 128m
+    logging: *obs-logging
+    restart: unless-stopped
+
+  # ===========================================================================
+  # exporters
+  # ===========================================================================
+  node-exporter:
+    image: prom/node-exporter:v1.11.1 # WP10 pedia v1.8.2 (>1 ano defasada)
+    command:
+      - "--path.rootfs=/host"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host/.+)($$|/)"
+    pid: host
+    volumes:
+      # sem propagação rslave: o Docker Desktop (dev/macOS) não a suporta;
+      # em Linux 'ro' simples também funciona para os coletores usados.
+      - "/:/host:ro"
+    networks: [backend]
+    mem_limit: 64m
+    logging: *obs-logging
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.52.1 # WP10 pedia v0.49.1 (>1 ano defasada)
+    command:
+      - "--housekeeping_interval=30s"
+      - "--docker_only=true"
+      - "--store_container_labels=false"
+      # Sem métricas de disco por-container (disco do HOST = node-exporter).
+      # LIMITAÇÃO conhecida: com "containerd image store" (Docker Desktop dev)
+      # o handler docker do cadvisor falha por-container ("failed to identify
+      # the read-write layer") e só saem métricas de máquina; no servidor Linux
+      # com storage driver overlay2 clássico as métricas por-container saem
+      # normalmente (name="petro-radar-*"). Ver observability/README.md.
+      - "--enable_metrics=cpu,cpuLoad,memory,network,oom_event"
+    privileged: true
+    # cgroup v2 (Docker moderno): sem o namespace de cgroup do HOST o cadvisor
+    # enxerga só o próprio cgroup ("/") e não emite métricas por-container.
+    cgroup: host
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      # o socket precisa ser montado como ARQUIVO (no Docker Desktop o mount do
+      # diretório /var/run não materializa o socket vivo do daemon).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks: [backend]
+    mem_limit: 256m
+    logging: *obs-logging
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.86.0 # WP10 pedia v1.62.0 (>1 ano defasada)
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      # Filas Celery REAIS (worker/celery_app.py task_routes) no db1 do broker
+      # => métrica redis_key_size{db="db1",key="<fila>"} (LLEN).
+      REDIS_EXPORTER_CHECK_KEYS: "db1=default,db1=scraping,db1=embeddings,db1=ia,db1=manutencao"
+    networks: [backend]
+    mem_limit: 64m
+    logging: *obs-logging
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.20.0
+    environment:
+      DATA_SOURCE_NAME: "${DATABASE_URL}?sslmode=disable"
+    networks: [backend]
+    mem_limit: 64m
+    logging: *obs-logging
+    restart: unless-stopped
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.28.0 # WP10 pedia v0.25.0 (>1 ano defasada)
+    volumes:
+      - ./observability/blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    networks: [backend]
+    mem_limit: 64m
+    logging: *obs-logging
+    restart: unless-stopped
+
+  # ===========================================================================
+  # G2 — GlitchTip (error tracking Sentry-compatível), OPT-IN via profile:
+  #   docker compose -f docker-compose.yml -f docker-compose.observability.yml \
+  #     --profile errors up -d
+  # Postgres e Redis PRÓPRIOS (isolamento total do db/redis do app; rede
+  # dedicada `glitchtip`). O glitchtip-web também entra na `backend` com alias
+  # "glitchtip" => DSN interno http://<chave>@glitchtip:8000/1 p/ bff/worker/web.
+  # ===========================================================================
+  glitchtip-db:
+    profiles: ["errors"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: glitchtip
+      POSTGRES_PASSWORD: ${GLITCHTIP_DB_PASSWORD:-glitchtip}
+      POSTGRES_DB: glitchtip
+    volumes:
+      - glitchtip_pg_data:/var/lib/postgresql/data
+    networks: [glitchtip]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U glitchtip -d glitchtip"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging: *obs-logging
+    restart: unless-stopped
+
+  glitchtip-redis:
+    profiles: ["errors"]
+    image: redis:7-alpine # mesma imagem do redis principal (já baixada)
+    networks: [glitchtip]
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *obs-logging
+    restart: unless-stopped
+
+  glitchtip-migrate:
+    profiles: ["errors"]
+    image: glitchtip/glitchtip:6.2.0
+    command: ["./bin/run-migrate.sh"]
+    environment: &glitchtip-env
+      DATABASE_URL: postgresql://glitchtip:${GLITCHTIP_DB_PASSWORD:-glitchtip}@glitchtip-db:5432/glitchtip
+      REDIS_URL: redis://glitchtip-redis:6379/0
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-troque-gere-com-openssl-rand-hex-32}
+      GLITCHTIP_DOMAIN: ${GLITCHTIP_DOMAIN:-http://localhost:8010}
+      DEFAULT_FROM_EMAIL: ${FROM_EMAIL:-no-reply@example.com}
+      EMAIL_URL: ${GLITCHTIP_EMAIL_URL:-consolemail://} # smtp://user:pass@host:587 qdo a TI liberar
+      ENABLE_USER_REGISTRATION: "False"
+      ENABLE_ORGANIZATION_CREATION: "True"
+      GLITCHTIP_MAX_EVENT_LIFE_DAYS: "90"
+      CELERY_WORKER_AUTOSCALE: "1,3"
+    depends_on:
+      glitchtip-db:
+        condition: service_healthy
+      glitchtip-redis:
+        condition: service_healthy
+    networks: [glitchtip]
+    mem_limit: 512m
+    logging: *obs-logging
+    restart: "no"
+
+  glitchtip-web:
+    profiles: ["errors"]
+    image: glitchtip/glitchtip:6.2.0
+    environment: *glitchtip-env
+    depends_on:
+      glitchtip-migrate:
+        condition: service_completed_successfully
+    networks:
+      glitchtip: {}
+      backend:
+        aliases: [glitchtip] # DSN interno: http://<chave>@glitchtip:8000/<projeto>
+      frontend: {} # necessário p/ publicar a porta (backend é internal)
+    ports:
+      - "127.0.0.1:8010:8000" # UI do GlitchTip (loopback; só com --profile errors)
+    mem_limit: 512m
+    logging: *obs-logging
+    restart: unless-stopped
+
+  glitchtip-worker:
+    profiles: ["errors"]
+    image: glitchtip/glitchtip:6.2.0
+    command: ["./bin/run-celery-with-beat.sh"]
+    environment: *glitchtip-env
+    depends_on:
+      glitchtip-migrate:
+        condition: service_completed_successfully
+    networks: [glitchtip]
+    mem_limit: 512m
+    logging: *obs-logging
+    restart: unless-stopped
+
+# -----------------------------------------------------------------------------
+# Volumes próprios (prefixo obs_/glitchtip_ — não colidem com os do app).
+# Redes frontend/backend NÃO são redeclaradas: vêm do docker-compose.yml
+# (mesmo project). Só a rede isolada do GlitchTip é nova.
+# -----------------------------------------------------------------------------
+volumes:
+  obs_prometheus:
+  obs_alertmanager:
+  obs_grafana:
+  obs_loki:
+  obs_promtail:
+  glitchtip_pg_data:
+
+networks:
+  glitchtip:
+    driver: bridge

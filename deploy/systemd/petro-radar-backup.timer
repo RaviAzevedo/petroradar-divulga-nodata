@@ -1,0 +1,14 @@
+# systemd timer — dispara o backup diariamente às 02:30 (hora do servidor).
+# Persistent=true => se o servidor estava desligado no horário, roda ao ligar.
+# Instale com: sudo ./deploy/install-backup-timer.sh
+[Unit]
+Description=Agenda diaria do backup do Petro Radar on-prem (02:30)
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=petro-radar-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,129 @@
+{
+  "uid": "petro-coleta",
+  "title": "Petro Radar — Coleta / Worker (sync)",
+  "tags": ["petro-radar", "worker", "scraper"],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Fonte:** `worker:8080/metrics` (worker/healthz.py). As séries `petro_*` só aparecem após o **rebuild da imagem do worker** com o healthz novo — ver `observability/README.md`. O backlog das filas via `redis_key_size` (redis-exporter) já funciona sem rebuild (dashboard Filas/Redis)."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Horas desde o último sync por tipo (vs limite)",
+      "gridPos": { "h": 9, "w": 14, "x": 0, "y": 3 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "petro_sync_idade_segundos / 3600", "legendFormat": "{{tipo}}" },
+        { "refId": "B", "expr": "petro_sync_limite_segundos / 3600", "legendFormat": "limite {{tipo}}" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "h", "custom": { "fillOpacity": 5 } },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "/^limite .*/" },
+            "properties": [
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } },
+              { "id": "custom.fillOpacity", "value": 0 },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+            ]
+          }
+        ]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Erros na última execução (por tipo)",
+      "gridPos": { "h": 9, "w": 10, "x": 14, "y": 3 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "petro_sync_erros_ultima_execucao", "legendFormat": "{{tipo}}", "instant": true }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Heartbeat do beat (idade)",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "petro_worker_beat_heartbeat_age_seconds", "instant": true }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 120 }, { "color": "red", "value": 300 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Dependências do worker (redis / db / beat)",
+      "gridPos": { "h": 6, "w": 8, "x": 6, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "petro_worker_redis_up", "legendFormat": "redis", "instant": true },
+        { "refId": "B", "expr": "petro_worker_db_up", "legendFormat": "postgres", "instant": true },
+        { "refId": "C", "expr": "petro_worker_beat_ok", "legendFormat": "beat", "instant": true }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "OK", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Novas / Total na última execução (por tipo)",
+      "gridPos": { "h": 6, "w": 10, "x": 14, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "petro_sync_novas_ultima_execucao", "legendFormat": "novas {{tipo}}" },
+        { "refId": "B", "expr": "petro_sync_total_ultima_execucao", "legendFormat": "total {{tipo}}" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 5 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 7,
+      "type": "logs",
+      "title": "Logs do worker",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 18 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        { "refId": "A", "expr": "{compose_project=\"petro-radar\", service=\"worker\"}" }
+      ],
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "enableLogDetails": true }
+    }
+  ]
+}

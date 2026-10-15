@@ -1,0 +1,43 @@
+# WP12 — imagem do runner de validação de paridade (perfil "tests" do compose).
+# Roda smoke + e2e (pytest+httpx) + comparação on-prem×prod + egress guard + go/no-go.
+# Modelo "pitstop": as deps são pinadas e instaladas no BUILD (offline no run).
+FROM python:3.12-slim
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# Ferramentas mínimas p/ smoke shell (curl/psql client/redis-cli/mc opcional).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates postgresql-client redis-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tests
+COPY requirements.txt /tests/requirements.txt
+RUN pip install -r /tests/requirements.txt
+
+# Playwright (UI e2e): a lib python já vem do requirements.txt, mas o DOWNLOAD
+# do chromium fica DESLIGADO por ora — nao existe nenhum *.spec.ts (run_e2e.sh
+# faz SKIP limpo do bloco UI) e o `playwright install --with-deps` quebra no
+# Debian trixie (ttf-unifont/ttf-ubuntu-font-family renomeados p/ fonts-*).
+# Quando os specs de UI nascerem: reativar com
+#   RUN apt-get update && apt-get install -y --no-install-recommends fonts-unifont \
+#    && python -m playwright install chromium
+
+# Node opcional p/ rodar os .spec.ts via npx playwright (montado em runtime via volume).
+COPY . /tests
+
+# Layout de import canonico (WP12): PYTHONPATH=/ + pacote regular em /tests
+# (__init__.py em tests/, tests/lib, tests/e2e, tests/smoke, tests/parity) =>
+# "from tests.lib import fixtures" resolve SEMPRE, tanto no codigo copiado no
+# build quanto no volume ./tests:/tests montado por cima em runtime.
+ENV PYTHONPATH=/
+
+# cwd=/ e OBRIGATORIO: os alvos do Makefile e o run_e2e.sh usam caminhos
+# RELATIVOS ("pytest -q tests/smoke", "pytest tests/e2e/..."), que so existem
+# a partir da raiz. Com WORKDIR /tests eles resolveriam /tests/tests/* (quebra).
+WORKDIR /
+
+# Default: roda o smoke; o Makefile sobrescreve o comando por alvo (test-*).
+CMD ["pytest", "-q", "tests/smoke"]

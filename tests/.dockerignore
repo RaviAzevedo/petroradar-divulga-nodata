@@ -1,0 +1,14 @@
+# Contexto de build = ./tests (COPY . /tests no Dockerfile.tester).
+# _artifacts/ NUNCA entra na imagem (runtime só; em run é volume ./tests:/tests).
+# _golden/ ENTRA de propósito (baseline local do parity self-golden, se existir).
+_artifacts/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.git/
+node_modules/
+.DS_Store

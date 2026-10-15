@@ -1,0 +1,54 @@
+# =============================================================================
+# petro-radar-onprem — configuração de QUALIDADE (ruff + mypy) do repo raiz.
+# =============================================================================
+# Este arquivo NÃO empacota nada (não há [project]): serve só de config para as
+# ferramentas de lint/typecheck do CI (.github/workflows/ci.yml) e do dev local.
+#
+# FILOSOFIA (B8): os checks devem passar VERDES no estado ATUAL do repo sem
+# tocar em bff/ e worker/ (frentes de outros agentes). O legado que não passa
+# fica confinado em per-file-ignores/overrides EXPLÍCITOS — é dívida anotada,
+# não sumida. Reduza as listas conforme o código for saneado.
+# =============================================================================
+
+[tool.ruff]
+# Containers rodam Python 3.12 (bff/Dockerfile, worker/Dockerfile); py311 é o
+# piso de sintaxe aceito (target conservador p/ dev com pythons mais velhos).
+target-version = "py311"
+# Medido no repo em 2026-07-02: p99 das linhas ≈ 100; cauda real até ~150 em
+# bff/worker (ignorada abaixo). 120 é o teto que o código NOVO deve respeitar.
+line-length = 120
+# app/ é um repo git PRÓPRIO aninhado (Next.js/TypeScript) — fora do escopo.
+extend-exclude = ["app"]
+
+[tool.ruff.lint]
+# Selects conservadores: pycodestyle (E/W), pyflakes (F), isort (I).
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# ── DÍVIDA ANOTADA (bff/ e worker/ são frentes de agentes paralelos — não
+#    tocar nesta frente). Contagem em 2026-07-02 com line-length=120:
+#    bff:    67×E501, 17×I001, 15×F401, 15×E741, 3×F541, 2×E402
+#    worker: 91×E501(*), 19×E701, 8×F401, 10×I001, 8×F541, 3×F841, 4×E402
+#    (*) inclui tasks.py com linhas de até ~150 colunas.
+#    Ao assumir a limpeza: remova um código por vez e rode `ruff check`.
+"bff/**" = ["E402", "E501", "E741", "F401", "F541", "I001"]
+"worker/**" = ["E402", "E501", "E701", "F401", "F541", "F841", "I001"]
+# ── tests/e2e: o bootstrap do sys.path (raiz do repo) precisa rodar ANTES dos
+#    `from tests.lib import ...` — E402 é o padrão documentado do harness.
+"tests/e2e/*.py" = ["E402"]
+
+[tool.mypy]
+# Modo leniente-mas-útil (B2): pega erros óbvios (atributos, retornos, None)
+# sem exigir stubs de terceiros nem anotações completas. NÃO subir p/ strict
+# de uma vez — aperte módulo a módulo.
+python_version = "3.12"
+ignore_missing_imports = true
+# app/ = repo Next aninhado; __pycache__ por higiene.
+exclude = ['^app/', '__pycache__']
+
+# ── DÍVIDA ANOTADA (mypy) — módulo legado do worker que não tipa hoje:
+#    tasks.py (~7 erros). ignore_errors até a frente do worker sanear — remova
+#    o módulo da lista e corrija os erros que aparecerem.
+[[tool.mypy.overrides]]
+module = ["tasks"]
+ignore_errors = true

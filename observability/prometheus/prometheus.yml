@@ -1,0 +1,108 @@
+# =============================================================================
+# observability/prometheus/prometheus.yml — scrape da stack Petro Radar on-prem
+# (WP10; Elasticsearch EXPURGADO da stack em 2026-07-02 — sem scrape de ES).
+#
+# Roda no MESMO projeto compose (docker compose -f docker-compose.yml
+# -f docker-compose.observability.yml up -d) => resolve serviços por nome na
+# rede interna `backend`. Nada aqui sai para a internet.
+# =============================================================================
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # ── auto-observação da própria stack ────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
+
+  - job_name: grafana
+    static_configs:
+      - targets: ["grafana:3000"]
+
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+
+  # ── aplicação ───────────────────────────────────────────────────────────────
+  # BFF FastAPI: GET /metrics (bff/app/core/observability.py — prometheus-client).
+  - job_name: bff
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["bff:8000"]
+
+  # Worker Celery: /metrics servido pelo worker/healthz.py (:8080). ATENÇÃO:
+  # o endpoint só existe após REBUILD da imagem do worker (ver observability/
+  # README.md) — até lá este target fica DOWN (o /healthz segue coberto pelo
+  # blackbox abaixo).
+  - job_name: worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["worker:8080"]
+
+  # ── exporters de infra ──────────────────────────────────────────────────────
+  - job_name: node # disco/CPU/RAM/inodes do host
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  - job_name: cadvisor # por-container (CPU/RAM/OOM/restarts)
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  - job_name: redis # memória, clientes e filas Celery (redis_key_size db1)
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  # ── healthchecks HTTP agregados (blackbox) ──────────────────────────────────
+  # MinIO: o /minio/v2/metrics/* exige MINIO_PROMETHEUS_AUTH_TYPE=public no
+  # serviço minio (compose principal — fora da alçada deste overlay); por ora
+  # só o healthcheck HTTP entra aqui.
+  - job_name: blackbox-http
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - http://bff:8000/bff/health
+          - http://worker:8080/healthz
+          - http://minio:9000/minio/health/live
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # web (Next standalone): mesmo canário do healthcheck do compose —
+  # /api/auth/csrf (público, 200 sem tocar o banco) => módulo http_alive.
+  - job_name: blackbox-web
+    metrics_path: /probe
+    params:
+      module: [http_alive]
+    static_configs:
+      - targets:
+          - http://web:3000/api/auth/csrf
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

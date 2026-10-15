@@ -1,0 +1,58 @@
+# ── Camada BFF FastAPI — Petro Radar on-premise ──────────────────────────────
+# Python 3.12
+
+# Web framework + servidor ASGI
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# Configuração (settings via ambiente / .env)
+pydantic-settings==2.7.1
+
+# Banco de dados: SQLAlchemy 2 async + driver asyncpg + pgvector
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+pgvector==0.3.6
+
+# Autenticação: validação do token de sessão do NextAuth v5.
+#  - PyJWT valida o JWS HS256 (token de teste forjado / fallback de 3 segmentos).
+#  - joserfc decripta o JWE (token REAL do Auth.js v5: 5 segmentos, alg "dir",
+#    enc "A256CBC-HS512") com a chave derivada por HKDF (ver app/core/security.py).
+PyJWT==2.10.1
+joserfc>=1.0
+
+# Hash de senha p/ POST /api/admin/users (espelha bcrypt.hash(senha, 12) do
+# bcryptjs no Next — gera $2b$12$..., verificável pelo bcryptjs).
+bcrypt==4.2.1
+
+# Cache / rate limit / health
+redis==5.2.1
+
+# IA (análise / OCR / RAG)
+anthropic==0.42.0
+
+# HTTP client (chamadas a serviços internos, embeddings, etc.)
+httpx==0.28.1
+
+# Upload de arquivos (multipart/form-data)
+python-multipart==0.0.20
+
+# Storage de objetos S3/MinIO (proxy autenticado de anexos do cofre — download).
+# Client S3 path-style (MinIO exige addressing_style="path"). botocore vem como
+# dependência transitiva (Config(s3={'addressing_style':'path'})).
+boto3>=1.34
+# Client S3 ASSÍNCRONO usado pelas rotas migradas de ARQUIVO de família/cofre
+# (put_object no upload, get_object no download) — ver routers/migrated/
+# conf_familias_id_anexos.py e conf_*_anexos_aid_dl.py. Traz aiobotocore+botocore.
+aioboto3==13.2.0
+
+# Notificacoes on-prem (WP08): e-mail via SMTP corporativo.
+aiosmtplib==3.0.2
+
+# Decode JWE A256GCM do NextAuth (Decisao 4).
+cryptography>=43
+openpyxl==3.1.5
+
+# Observabilidade (WP09): metricas Prometheus (GET /metrics) + Sentry/GlitchTip.
+# Sem elas observability.py degrada p/ no-op (/metrics vazio, Sentry desligado).
+prometheus-client==0.21.1
+sentry-sdk==2.20.0

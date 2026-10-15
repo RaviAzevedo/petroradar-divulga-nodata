@@ -1,0 +1,2 @@
+CREATE INDEX "idx_lic_score" ON "licitacoes" USING btree ("score_interesse");--> statement-breakpoint
+CREATE INDEX "idx_lic_relevancia_score" ON "licitacoes" USING btree ("relevancia","score_interesse");

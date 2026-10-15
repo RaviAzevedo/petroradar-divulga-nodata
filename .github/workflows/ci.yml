@@ -1,0 +1,103 @@
+# =============================================================================
+# petro-radar-onprem — CI mínimo do repo RAIZ (B2). Sem segredos, sem stack.
+# =============================================================================
+# Jobs (todos verdes no estado do repo em 2026-07-02 — validados localmente):
+#   lint          ruff check bff worker tests (config: pyproject.toml).
+#                 `ruff format --check` NÃO roda: 149/172 arquivos seriam
+#                 reformatados hoje — dívida anotada; adotar o format exigiria
+#                 reformatar bff/worker (frentes de outros agentes).
+#   typecheck     mypy leniente (bff/app/core + worker; overrides no pyproject
+#                 ignoram tasks — dívida anotada).
+#   compileall    sanidade de sintaxe de TODO o Python (bff, worker, tests).
+#   compose-config valida docker-compose.yml com um .env.onprem FAKE (o example).
+#   shellcheck    deploy/*.sh só em --severity=error (estilo não trava).
+#   drift-guard   B4: mudou bff/app/routers/migrated/** sem [drift-ok]/[no-mirror]
+#                 no commit => falha instruindo a espelhar no repo do app.
+#   unit-bff      F10: tests/unit_bff in-process (ASGITransport, sem rede).
+# =============================================================================
+name: CI — raiz (lint, types, compose, drift, unit-bff)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Pinada na versão validada localmente contra o pyproject (2026-07-02).
+      - run: pip install ruff==0.15.20
+      - run: ruff check bff worker tests
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install mypy==2.1.0
+      # Leniente-mas-útil: ignore_missing_imports no pyproject; NÃO subir p/
+      # strict de uma vez. Escopo: núcleo do BFF + worker inteiro (menos os
+      # módulos legados ignorados por override — ver pyproject.toml).
+      - run: mypy --config-file pyproject.toml bff/app/core worker
+
+  compileall:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m compileall bff worker tests -q
+
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # .env.onprem FAKE a partir do example: o compose interpola
+      # ${POSTGRES_PASSWORD:?...} e env_file [.env.onprem] — precisa existir,
+      # não precisa ser real. NUNCA usar segredos aqui.
+      - run: cp .env.onprem.example .env.onprem
+      - run: docker compose --env-file .env.onprem -f docker-compose.yml config -q
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pré-instalado no ubuntu-latest. --severity=error: estilo (SC2086 etc.)
+      # não trava o CI; erro real (sintaxe/quebra provável) trava.
+      - run: shellcheck --severity=error deploy/*.sh
+
+  drift-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # o guard precisa do range BASE..HEAD completo
+      - name: Drift Next<->BFF (lado bff)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        # Range irresolvível (primeiro push do branch) => o guard passa com aviso.
+        run: python3 tests/lib/drift_guard.py --side bff --range "${BASE_SHA}..HEAD"
+
+  unit-bff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12" # mesma versão do container do BFF
+          cache: pip
+      # In-process (ASGITransport): importa bff/app direto no runner — precisa
+      # das deps do BFF + pytest/httpx/PyJWT. Redis/DB fora do ar não travam
+      # (rate-limit e revogação são fail-open por default; guards 401/403 nunca
+      # tocam I/O). Caminho documentado em tests/unit_bff/conftest.py.
+      - run: pip install -r bff/requirements.txt -r tests/requirements-test.txt
+      - run: pytest tests/unit_bff -q

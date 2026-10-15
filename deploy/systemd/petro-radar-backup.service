@@ -1,0 +1,30 @@
+# systemd service — backup do Petro Radar on-prem (CRÍTICO #4 + F2 cifragem/offsite).
+# Instale com: sudo ./deploy/install-backup-timer.sh   (host de PRODUÇÃO; nunca no dev)
+# Confira:     systemctl list-timers petro-radar-backup.timer
+[Unit]
+Description=Backup consistente do Petro Radar on-prem (Postgres cifrado + blobs MinIO)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# AJUSTE: caminho onde o pacote PITSTOP foi extraido no servidor.
+WorkingDirectory=/opt/petro-radar-onprem
+# ── F2: cifragem (OBRIGATORIA em producao — ver deploy/checklist-prod.md §3) ──
+# Chave PUBLICA age (age-keygen; a IDENTITY fica custodiada OFFLINE):
+Environment=BACKUP_AGE_RECIPIENT=
+# Falha o backup se nao conseguir cifrar (NAO deixe 0 em producao):
+Environment=BACKUP_REQUIRE_ENCRYPTION=1
+# ── F2: offsite (NAS/segundo disco montado) + retencao propria ────────────────
+Environment=BACKUP_OFFSITE_DIR=
+Environment=BACKUP_OFFSITE_RETENTION_DAYS=30
+# ── Retencao local ────────────────────────────────────────────────────────────
+Environment=BACKUP_KEEP_DAILY=14
+Environment=BACKUP_KEEP_WEEKLY=8
+ExecStart=/usr/bin/env bash deploy/backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=multi-user.target

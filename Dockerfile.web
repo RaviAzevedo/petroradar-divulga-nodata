@@ -1,0 +1,58 @@
+# =============================================================================
+# Dockerfile.web — Next.js 16 standalone (Petro Radar)
+# Build context = ./app (worktree do branch feat/onprem-prereqs; ver compose)
+# =============================================================================
+# PRE-REQUISITOS no codigo do app (itens do plano de migracao):
+#   1) next.config.ts:  output: 'standalone'
+#   2) src/db/index.ts + src/db/migrate.ts: trocar @neondatabase/serverless
+#      por pg + drizzle-orm/node-postgres (o build NAO precisa de DATABASE_URL
+#      pois getDb() e lazy, mas o RUNTIME precisa do driver pg instalado).
+#   3) next/font/google (Inter): exige internet no estagio builder OU migrar
+#      para next/font/local com o .woff2 versionado (build em rede fechada).
+# =============================================================================
+
+# ---- deps: instala node_modules ---------------------------------------------
+# (sharp/libvips REMOVIDOS em 2026-07-02 junto com a feature morta de cartas
+#  DOCX — sem deps nativas, o estagio dispensa vips-dev/build-base/python3.)
+FROM node:22-alpine AS deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+# .npmrc traz legacy-peer-deps=true (necessario: recharts/react 19 + peers).
+# O '*' torna o .npmrc opcional p/ contextos que nao o tenham.
+COPY package.json package-lock.json .npmrc* ./
+RUN npm ci
+
+# ---- builder: gera .next/standalone -----------------------------------------
+FROM node:22-alpine AS builder
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
+# NEXT_PUBLIC_* sao embutidas em build-time -> recebidas como build args do compose.
+ARG NEXT_PUBLIC_APP_URL
+ARG NEXT_PUBLIC_FEATURE_RESULTADOS
+ARG NEXT_PUBLIC_PROPONENTE_CNPJ
+ARG NEXT_PUBLIC_PETRONECT_URL
+ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL \
+    NEXT_PUBLIC_FEATURE_RESULTADOS=$NEXT_PUBLIC_FEATURE_RESULTADOS \
+    NEXT_PUBLIC_PROPONENTE_CNPJ=$NEXT_PUBLIC_PROPONENTE_CNPJ \
+    NEXT_PUBLIC_PETRONECT_URL=$NEXT_PUBLIC_PETRONECT_URL
+RUN npm run build
+
+# ---- runner: imagem final minima --------------------------------------------
+FROM node:22-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
+RUN addgroup -g 1001 nodejs && adduser -u 1001 -G nodejs -S nextjs
+# O standalone NAO inclui public/ nem .next/static — copiar manualmente:
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+USER nextjs
+EXPOSE 3000
+# server.js e gerado pelo standalone na raiz copiada; le PORT/HOSTNAME do env.
+CMD ["node", "server.js"]

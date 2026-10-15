@@ -1,0 +1,12 @@
+# Provider de dashboards por arquivo (JSONs em observability/grafana/dashboards/).
+apiVersion: 1
+providers:
+  - name: petro-radar
+    folder: Petro Radar
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 60
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

@@ -1,0 +1,45 @@
+# =============================================================================
+# observability/promtail/promtail-config.yml — coleta de logs dos containers
+# via Docker service discovery (socket). O Promtail lê o stream de log pela
+# API do Docker (não pelos arquivos json-file) => funciona igual no Linux e
+# no Docker Desktop/macOS de dev, sem montar /var/lib/docker/containers.
+#
+# Só containers do projeto compose `petro-radar` entram (app + observabilidade).
+# Labels: service (nome do serviço no compose), container, compose_project e
+# level (extraído do JSON estruturado do web/bff; linhas texto ficam sem level).
+# =============================================================================
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /positions/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+    relabel_configs:
+      # só o projeto petro-radar (mesmo project name => inclui a própria stack obs)
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_project"]
+        regex: "petro-radar"
+        action: keep
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: service
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_project"]
+        target_label: compose_project
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: container
+    pipeline_stages:
+      # Extrai level do JSON estruturado (logger.ts do web / logging JSON do bff).
+      # Linha não-JSON (ex.: Celery texto) passa intacta — a stage falha e segue.
+      - json:
+          expressions:
+            level: level
+      - labels:
+          level:

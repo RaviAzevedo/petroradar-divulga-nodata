@@ -1,0 +1,78 @@
+name: CI — Test, Lint, TypeCheck, Knip & Build
+
+on:
+  push:
+    # B3: o trabalho on-prem vive em feat/onprem-prereqs — sem "feat/**" o CI
+    # simplesmente nunca rodava no branch ativo.
+    branches: [main, "feat/**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  # B4 — guard HEURÍSTICO de drift Next<->BFF (lado next). Réplica inline de
+  # tests/lib/drift_guard.py do repo petro-radar-onprem (este repo não o enxerga
+  # — são gits separados). Se src/app/api/** mudou no range e nenhum commit traz
+  # [drift-ok] (espelho aplicado/confirmado no BFF) ou [no-mirror] (mudança
+  # deliberadamente sem espelho), FALHA instruindo a espelhar em
+  # bff/app/routers/migrated/**. Allowlist (rotas Next-only, sem espelho por
+  # design — ver nginx/conf.d/petro-radar.conf do repo on-prem):
+  #   - auth/[...nextauth] (NextAuth emite a sessão SÓ no Next; o BFF só valida)
+  #   - as 3 rotas XLSX (relatorios/executivo, conformidade/import/template/
+  #     familias, licitacoes/[id]/pacote-orcamento): NGINX fixa no Next (bytes
+  #     exceljs != openpyxl); espelhos BFF removidos em 2026-07-02.
+  drift-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # range BASE..HEAD completo
+      - name: Drift Next<->BFF (lado next)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA}" ] || ! git rev-list -n1 "${BASE_SHA}" >/dev/null 2>&1; then
+            echo "drift-guard[next]: base '${BASE_SHA:-vazia}' não resolvível (primeiro push?); pulando."
+            exit 0
+          fi
+          RANGE="${BASE_SHA}..HEAD"
+          CHANGED=$(git diff --name-only "$RANGE" -- 'src/app/api/**' \
+            | grep -vE '^src/app/api/(auth/\[\.\.\.nextauth\]|relatorios/executivo|conformidade/import/template/familias|licitacoes/\[id\]/pacote-orcamento)/' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "drift-guard[next]: nenhuma mudança de superfície de API em $RANGE. OK."
+            exit 0
+          fi
+          if git log --format=%B "$RANGE" | grep -qE '\[(drift-ok|no-mirror)\]'; then
+            echo "drift-guard[next]: mudanças de API liberadas por token [drift-ok]/[no-mirror]:"
+            echo "$CHANGED"
+            exit 0
+          fi
+          echo "drift-guard[next]: FALHA — rotas de API mudaram em $RANGE sem confirmação de espelhamento:"
+          echo "$CHANGED"
+          echo
+          echo "Confirme o espelho em bff/app/routers/migrated/** (repo petro-radar-onprem)"
+          echo "e adicione '[drift-ok]' à mensagem do commit (ou '[no-mirror]' quando a"
+          echo "mudança for deliberadamente sem espelho — justifique). Os dois repos não"
+          echo "se enxergam; este guard é a trava heurística de paridade (B4)."
+          exit 1
+
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # B7: coverage com thresholds RATCHET (vitest.config.ts, include src/lib/**).
+      - run: npx vitest run --coverage
+      - run: npx tsc --noEmit
+      # B7: lint não pode ser só decorativo (regras estão em "warn"). Teto
+      # ratchet fixado no valor MEDIDO em 2026-07-02: 162 warnings. Warning
+      # NOVO estoura o teto e falha; ao limpar warnings, ABAIXE o número.
+      # ratchet: reduzir até 0.
+      - run: npx eslint . --max-warnings=162
+      # Dead-code: script check:dead-code roda knip (config em knip.json)
+      - run: npx knip
+      - run: npm run build

@@ -1,0 +1,32 @@
+# =============================================================================
+# docker-compose.embeddings.yml — poe redea no TEI (embeddings-local).
+# =============================================================================
+# Medido no servidor de producao (2026-08-25): sem limite de lote, o warmup do BGE-m3
+# aloca o batch maximo (8192 tokens) e escala ate 14,7 GB — sobra 230 MB de host,
+# o processo morre em silencio (exit 0) e o container entra em loop de restart.
+# Pior: sem `mem_limit`, esse pico competia com web/bff/db no MESMO host.
+#
+# Os chunks do acervo tem ~1.200 caracteres (~300 tokens), entao 4096 tokens de
+# lote ainda agrupa ~13 chunks por passada — nao ha perda de vazao real.
+#
+#   --max-batch-tokens ....... teto do lote; e o que o warmup pre-aloca
+#   --max-client-batch-size .. espelha EMBEDDING_MAX_LOTE=32 do worker/indexer
+#   --auto-truncate .......... chunk acima de 8192 tokens trunca em vez de dar 413
+#   mem_limit ................ trava dura: o TEI nunca mais derruba o resto
+# =============================================================================
+services:
+  embeddings-local:
+    command:
+      - "--model-id"
+      - "${EMBEDDING_MODEL:-BAAI/bge-m3}"
+      - "--port"
+      - "80"
+      - "--max-batch-tokens"
+      - "4096"
+      - "--max-client-batch-size"
+      - "32"
+      - "--auto-truncate"
+    mem_limit: 6g
+    # 6 dos 8 vCPU: a indexacao do acervo satura o host por ~12h e este servidor
+    # tambem serve o app em horario comercial. 2 nucleos ficam para web/bff/db.
+    cpus: 6.0
